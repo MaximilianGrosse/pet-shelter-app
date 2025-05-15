@@ -1,59 +1,67 @@
 import streamlit as st
-import gspread
+import pandas as pd
+import json
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from google.oauth2.service_account import Credentials
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 
-# Define the required scopes
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly"
-]
-
-# Load service account credentials
-creds = Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
-
-# Authorize with gspread
-gc = gspread.authorize(creds)
-
-# ---- Google Sheet IDs ----
-sheet_ids = {
-    'Pets': '1Y-BZPULn4PK9qNaR_2mRTXod6IlUfmXUNb6UIwzbsh4',
-    'Adopters': '158Q5MLKoMzXm8EmTQeaMcD75EPzm7WrqOKeTBMpLXv8',
-    'Shelters': '1zyIx53JlA9ljWbFEv7Nfpk0o69wKYhBB8ut8HZIqdLs'
-}
-
-# ---- Streamlit Interface ----
-st.title("🐾 Pet Shelter Web App")
-
-# Read and display data from each sheet
-for sheet_name, sheet_id in sheet_ids.items():
-    st.header(f"{sheet_name} Sheet Data")
-    try:
-        worksheet = gc.open_by_key(sheet_id).sheet1
-        data = worksheet.get_all_records()
-        st.dataframe(data)
-    except Exception as e:
-        st.error(f"Error reading {sheet_name} sheet: {e}")
-
-# ---- Google Drive API ----
+# ---- AUTH ----
+creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
+creds = service_account.Credentials.from_service_account_info(creds_dict)
+sheets_service = build('sheets', 'v4', credentials=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-# PetImages folder ID
-folder_id = '1Mmru8EOhgGva_JzUdAHOJhTXqDEtRRY4'
+# ---- CONFIG ----
+SHEET_ID = 'YOUR_GOOGLE_SHEET_ID'  # Replace with your actual sheet ID
+DRIVE_FOLDER_ID = 'YOUR_GOOGLE_DRIVE_FOLDER_ID'  # Replace with your Drive folder ID
 
-# List image files in the folder
-try:
-    query = f"'{folder_id}' in parents and mimeType contains 'image/' and trashed = false"
-    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
+st.title("🐾 Pet Shelter Web App")
 
-    st.header("📸 Pet Images from Google Drive")
-    if not items:
-        st.write("No images found.")
-    else:
-        for item in items:
-            image_url = f"https://drive.google.com/uc?id={item['id']}"
-            st.image(image_url, caption=item['name'], width=200)
+# ---- FUNCTIONS ----
+def read_sheet(sheet_name):
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=sheet_name
+        ).execute()
+        data = result.get('values', [])
+        if not data:
+            return pd.DataFrame()
+        return pd.DataFrame(data[1:], columns=data[0])
+    except HttpError as error:
+        st.error(f"Error reading {sheet_name} sheet: {error}")
+        return pd.DataFrame()
 
-except Exception as e:
-    st.error(f"Error retrieving images from Drive: {e}")
+def list_drive_images(folder_id):
+    try:
+        results = drive_service.files().list(
+            q=f"'{folder_id}' in parents and mimeType contains 'image/' and trashed = false",
+            fields="files(id, name, thumbnailLink)"
+        ).execute()
+        return results.get('files', [])
+    except HttpError as error:
+        st.error(f"Error retrieving images from Drive: {error}")
+        return []
+
+# ---- LOAD DATA ----
+st.header("Pets Sheet Data")
+pets_df = read_sheet("Pets")
+st.dataframe(pets_df)
+
+st.header("Adopters Sheet Data")
+adopters_df = read_sheet("Adopters")
+st.dataframe(adopters_df)
+
+st.header("Shelters Sheet Data")
+shelters_df = read_sheet("Shelters")
+st.dataframe(shelters_df)
+
+st.header("🐶 Pet Images from Drive")
+images = list_drive_images(DRIVE_FOLDER_ID)
+
+if images:
+    for image in images:
+        st.image(image["thumbnailLink"], caption=image["name"], width=150)
+else:
+    st.write("No images found in the Drive folder.")
